@@ -445,8 +445,15 @@ class ESQueryMaker(ESConnector):
                                 "script_score": {
                                     "query": {"match_all": {}},
                                     "script": {
-                                        "source": "cosineSimilarity(params.query_vector, '" + vector_field + "') + 1.0",
-                                        "params": {"query_vector": query_vector}
+                                        "source": """
+                                        double vector_score = cosineSimilarity(params.query_vector, params.vector_field) + 1.0;
+                                        double text_score = _score;
+                                        return 0.7 * vector_score + 0.3 * text_score;
+                                        """,
+                                        "params": {
+                                            "query_vector": query_vector,
+                                            "vector_field": vector_field
+                                        }
                                     }
                                 }
                             }
