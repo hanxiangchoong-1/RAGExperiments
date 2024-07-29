@@ -387,22 +387,24 @@ class ESQueryMaker(ESConnector):
             logger.error(f"Error executing search on index: {index_name} with query: {query}. Error: {e}")
             raise e
 
-    def parse_or_query(self, query_text: str, text_field: str) -> List[Dict]:
+    def parse_or_query(self, query_text: str, text_fields: List[str]) -> List[Dict]:
         # Split the query by 'OR', strip whitespace
         terms = [term.strip() for term in query_text.split(' OR ')]
         should_clauses = []
         for term in terms:
-            if len(term.split()) > 1:
-                # If term has multiple words, use match_phrase
-                should_clauses.append({"match_phrase": {text_field: term}})
-            else:
-                # If term is a single word, use match
+            # if len(term.split()) > 1:
+            #     # If term has multiple words, use match_phrase
+            #     for text_field in text_fields:
+            #         should_clauses.append({"match": {text_field: term}})
+            # else:
+            #     # If term is a single word, use match
+            for text_field in text_fields:
                 should_clauses.append({"match": {text_field: term}})
         
         return should_clauses
 
     def hybrid_vector_search(self, index_name: str, query_text: str, query_vector: List[float], 
-                            text_field: str, vector_field: str, 
+                            text_fields: List[str], vector_field: str, 
                             num_candidates: int = 100, num_results: int = 10) -> Dict:
         """
         Perform a hybrid search combining text and vector queries.
@@ -421,7 +423,7 @@ class ESQueryMaker(ESConnector):
         """
         try:
             # Parse the query_text and create the should clauses
-            should_clauses = self.parse_or_query(query_text, text_field)
+            should_clauses = self.parse_or_query(query_text, text_fields)
 
             search_body = {
                 "knn": {
