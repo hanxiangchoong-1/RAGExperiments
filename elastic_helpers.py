@@ -12,17 +12,19 @@ logger = logging.getLogger(__name__)
 
 class ESConnector:
 
-    def __init__(self, cloud_id: str, credentials: Optional[Tuple[str, str]] = None):
+    def __init__(self, hosts: List[str], credentials: Optional[Tuple[str, str]] = None, use_ssl: bool = True):
         """
         Initialize the ESConnector.
 
         Args:
-            es_url (str): The URL of the Elasticsearch cluster.
+            hosts (List[str]): A list of Elasticsearch host URLs.
             credentials (Optional[Tuple[str, str]]): A tuple containing the username and password for authentication.
+            use_ssl (bool): Whether to use SSL for the connection. Defaults to True.
 
         """
-        self.cloud_id=cloud_id
+        self.hosts = hosts
         self.credentials = credentials
+        self.use_ssl = use_ssl
         self.conn = self.create_es_connection()
 
     def create_es_connection(self) -> Elasticsearch:
@@ -32,13 +34,24 @@ class ESConnector:
         Returns:
             Elasticsearch: An Elasticsearch client instance.
         """
-        username,password=self.credentials[0],self.credentials[1]
-        es = Elasticsearch(
-            cloud_id=self.cloud_id,
-            basic_auth=(username, password)
-        )
-        logger.info(f"Connection created for cloud_id: {self.cloud_id}")
+        if self.credentials:
+            username, password = self.credentials
+            es = Elasticsearch(
+                hosts=self.hosts,
+                basic_auth=(username, password),
+                # use_ssl=self.use_ssl,
+                verify_certs=True
+            )
+        else:
+            es = Elasticsearch(
+                hosts=self.hosts,
+                # use_ssl=self.use_ssl,
+                verify_certs=True
+            )
+        
+        logger.info(f"Connection created for hosts: {self.hosts}")
         return es
+
 
     def ping(self) -> None:
         if self.conn.ping():
@@ -387,44 +400,35 @@ class ESQueryMaker(ESConnector):
             logger.error(f"Error executing search on index: {index_name} with query: {query}. Error: {e}")
             raise e
 
-    def parse_or_query(self, query_text: str, text_fields: List[str]) -> List[Dict]:
-        # Split the query by 'OR', strip whitespace
-        terms = [term.strip() for term in query_text.split(' OR ')]
-        should_clauses = []
-        for term in terms:
-            # if len(term.split()) > 1:
-            #     # If term has multiple words, use match_phrase
-            #     for text_field in text_fields:
-            #         should_clauses.append({"match": {text_field: term}})
-            # else:
-            #     # If term is a single word, use match
-            for text_field in text_fields:
-                should_clauses.append({"match": {text_field: term}})
-        
-        return should_clauses
+    def parse_or_query(self, query_text: str) -> List[str]:
+        # Split the query by 'OR' and strip whitespace from each term
+        # This converts a string like "term1 OR term2 OR term3" into a list ["term1", "term2", "term3"]
+        return [term.strip() for term in query_text.split(' OR ')]
 
     def hybrid_vector_search(self, index_name: str, query_text: str, query_vector: List[float], 
                             text_fields: List[str], vector_field: str, 
                             num_candidates: int = 100, num_results: int = 10) -> Dict:
         """
-        Perform a hybrid search combining text and vector queries.
+        Perform a hybrid search combining text-based and vector-based similarity.
 
         Args:
-            index_name (str): The name of the index to search.
-            query_text (str): The text query string.
-            query_vector (List[float]): The query vector for semantic search.
-            text_field (str): The name of the text field to search.
-            vector_field (str): The name of the dense vector field.
-            num_candidates (int): Number of candidates to consider in the initial vector search.
+            index_name (str): The name of the Elasticsearch index to search.
+            query_text (str): The text query string, which may contain 'OR' separated terms.
+            query_vector (List[float]): The query vector for semantic similarity search.
+            text_fields (List[str]): List of text fields to search in the index.
+            vector_field (str): The name of the field containing document vectors.
+            num_candidates (int): Number of candidates to consider in the initial KNN search.
             num_results (int): Number of final results to return.
 
         Returns:
-            Dict: The search results.
+            Dict: A tuple containing the Elasticsearch response and the search body used.
         """
         try:
-            # Parse the query_text and create the should clauses
-            should_clauses = self.parse_or_query(query_text, text_fields)
+            # Parse the query_text into a list of individual search terms
+            # This splits terms separated by 'OR' and removes any leading/trailing whitespace
+            query_terms = self.parse_or_query(query_text)
 
+            # Construct the search body for Elasticsearch
             search_body = {
                 "knn": {
                     "field": vector_field,
@@ -436,9 +440,11 @@ class ESQueryMaker(ESConnector):
                     "bool": {
                         "must": [
                             {
-                                "bool": {
-                                    "should": should_clauses,
-                                    "minimum_should_match": 1
+                                "multi_match": {
+                                    "query": " ".join(query_terms),
+                                    "fields": text_fields,
+                                    "type": "best_fields",
+                                    "operator": "or"
                                 }
                             }
                         ],
@@ -463,10 +469,15 @@ class ESQueryMaker(ESConnector):
                     }
                 }
             }
-            
+
+            # Execute the search request against the Elasticsearch index
             response = self.conn.search(index=index_name, body=search_body, size=num_results)
+            # Log the successful execution of the search for monitoring and debugging
             logger.info(f"Hybrid search executed on index: {index_name} with text query: {query_text}")
+            # Return both the response and the search body (useful for debugging and result analysis)
             return response, search_body
         except Exception as e:
+            # Log any errors that occur during the search process
             logger.error(f"Error executing hybrid search on index: {index_name}. Error: {e}")
+            # Re-raise the exception for further handling in the calling code
             raise e
